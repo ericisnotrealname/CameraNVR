@@ -79,7 +79,8 @@ class CameraNetDisk:
         while True:
             ret, frame = cap.read()
             if not ret:
-                break
+                logprint.info("cap.read() failed")
+                continue
             frame_counter += 1
             if frame_counter % self.config.motion_frame_interval != 0:
                 continue
@@ -95,6 +96,7 @@ class CameraNetDisk:
                 while True:
                     ret, frame = cap.read()
                     if not ret:
+                        logprint.info("cap.read() failed")
                         break
 
                     frame_counter += 1
