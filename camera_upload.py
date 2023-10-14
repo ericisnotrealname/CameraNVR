@@ -88,8 +88,8 @@ class CameraNetDisk:
             if motion_pixels > 3000:
                 logprint.info("检测到运动，开始录制视频...")
                 self.video_total_size = 0
-                cu_videopath = os.path.join(self.videopath,
-                                            str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())) + '.avi')
+                video_name = str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())) + '.avi'
+                cu_videopath = os.path.join(self.videopath, video_name)
                 out = cv2.VideoWriter(cu_videopath, fourcc, fps, size)
                 start_time = time.time()
                 while True:
@@ -119,7 +119,8 @@ class CameraNetDisk:
                                                             args=(cu_videopath,
                                                                   self.cameraname,
                                                                   10,
-                                                                  self.config.deletevd))
+                                                                  self.config.deletevd,
+                                                                  video_name))
                                     # elif disk == 2:
                                     #     sync = threading.Thread(target=alisync, args=(cu_videopath, cameraname, 0, deletevd))
                                     sync.start()
