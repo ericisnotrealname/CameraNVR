@@ -10,6 +10,66 @@ import config
 from log import logprint
 
 
+class RTSCapture(cv2.VideoCapture):
+    _cur_frame = None
+    _reading = False
+    schemes = ["rtsp://", "rtmp://"]
+    thread_permition = True
+
+    @staticmethod
+    def create(url, *schemes):
+        rtscap = RTSCapture(url)
+        rtscap._cur_frame = None
+        rtscap.frame_receiver = threading.Thread(target=rtscap.recv_frame, daemon=True)
+        rtscap.schemes.extend(schemes)
+        if isinstance(url, str) and url.startswith(tuple(rtscap.schemes)):
+            rtscap._reading = False
+        elif isinstance(url, int):
+            pass
+        return rtscap
+
+    def isStarted(self):
+        if self.isOpened():
+            return self.frame_receiver.is_alive()
+        return False
+
+    def recv_frame(self):
+        logprint.info("read frame")
+        while self.isOpened():
+            if self._reading:
+                ok, frame = self.read()
+            elif self.thread_permition:
+                continue
+            else:
+                break
+            if not ok:
+                logprint.info("read frame failed")
+                break
+            self._cur_frame = frame
+        self._reading = False
+
+    def read2(self):
+        while self._cur_frame is None:
+            logprint.info("current frame is None")
+            continue
+        frame = self._cur_frame
+        # self._cur_frame = None
+        return frame is not None, frame
+
+    def read_latest_frame(self, **kwargs):
+        return self.read2() if self._reading else self.read(**kwargs)
+
+    def start_read(self):
+        logprint.info("start read")
+        self.frame_receiver.start()
+
+    def stop_read(self):
+        self._reading = False
+        if self.frame_receiver.is_alive():
+            self.thread_permition = False
+            self.frame_receiver.join()
+
+
 class CameraNetDisk:
     def __init__(self):
         self.config = config
@@ -63,23 +123,42 @@ class CameraNetDisk:
                 break
             logprint.info(f"upload failed {index} times")
 
+    def upload_thread(self, cu_videopath: str, video_name: str):
+        if self.config.updisk:
+            disk = self.config.networkdisk[0]
+            if disk == 1:
+                logprint.info("try to upload to bidu net disk")
+                sync = threading.Thread(target=self.bysync,
+                                        args=(cu_videopath,
+                                              self.cameraname,
+                                              10,
+                                              self.config.deletevd,
+                                              video_name))
+                sync.start()
+                return sync
+            return None
+        return None
+
     def capture(self):
         logprint.info("trying to open NVR camera")
-        cap = cv2.VideoCapture(self.nvrurl)
+        # cap = cv2.VideoCapture(self.nvrurl)
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        cap = RTSCapture.create(self.nvrurl)
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         if fps >= 30:
             fps = 30
         elif fps <= 0:
             fps = 15
         logprint.info(f"fps: {fps}")
+        sleeptime = 1 / fps / 6
         size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         bg_subtractor = cv2.createBackgroundSubtractorKNN()
         frame_counter = 0
-        while True:
-            ret, frame = cap.read()
+        cap.start_read()
+        while cap.isStarted():
+            ret, frame = cap.read_latest_frame()
             if not ret:
-                logprint.info("cap.read() failed")
+                logprint.info("cap.read_latest_frame() failed")
                 continue
             frame_counter += 1
             if frame_counter % self.config.motion_frame_interval != 0:
@@ -88,13 +167,15 @@ class CameraNetDisk:
             motion_pixels = cv2.countNonZero(fg_mask)
             if motion_pixels > 3000:
                 logprint.info("检测到运动，开始录制视频...")
+                cap._reading = True
                 self.video_total_size = 0
                 video_name = str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())) + '.avi'
                 cu_videopath = os.path.join(self.videopath, video_name)
                 out = cv2.VideoWriter(cu_videopath, fourcc, fps, size)
                 start_time = time.time()
                 while True:
-                    ret, frame = cap.read()
+                    time.sleep(sleeptime)
+                    ret, frame = cap.read_latest_frame()
                     if not ret:
                         logprint.info("cap.read() failed")
                         break
@@ -103,36 +184,24 @@ class CameraNetDisk:
                     if frame_counter % self.config.motion_frame_interval != 0:
                         continue
 
-                    fg_mask = bg_subtractor.apply(frame)
-                    motion_pixels = cv2.countNonZero(fg_mask)
-
-                    if motion_pixels > 3000:
-                        out.write(frame)
+                    # if motion_pixels > 3000:
+                    #     out.write(frame)
+                    out.write(frame)
                     # else:
                     #     break
 
                     if time.time() - start_time >= self.config.videotime * 60:
-                        if self.config.updisk:
-                            for disk in self.config.networkdisk:
-                                if disk == 1:
-                                    logprint.info("try to upload to bidu net disk")
-
-                                    sync = threading.Thread(target=self.bysync,
-                                                            args=(cu_videopath,
-                                                                  self.cameraname,
-                                                                  10,
-                                                                  self.config.deletevd,
-                                                                  video_name))
-                                    # elif disk == 2:
-                                    #     sync = threading.Thread(target=alisync, args=(cu_videopath, cameraname, 0, deletevd))
-                                    sync.start()
-                        self.video_total_size += os.path.getsize(cu_videopath)  # 更新视频总大小
+                        # self.upload_thread(cu_videopath=cu_videopath, video_name=video_name)
+                        # self.video_total_size += os.path.getsize(cu_videopath)  # 更新视频总大小
                         out.release()
-                        if self.video_total_size >= self.config.upload_threshold * (1024 * 1024 * 1024):
-                            self.check_and_delete_earlier_videos()  # 检测网盘空间并删除早期视频
-                        break
+                        cap._reading = False
+                        # if self.video_total_size >= self.config.upload_threshold * (1024 * 1024 * 1024):
+                        #     self.check_and_delete_earlier_videos()  # 检测网盘空间并删除早期视频
+                        cap.stop_read()
+                        # break
+                        return
 
 
 if __name__ == "__main__":
-    cap = CameraNetDisk()
-    cap.capture()
+    capt = CameraNetDisk()
+    capt.capture()
